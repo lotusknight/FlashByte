@@ -59,9 +59,11 @@ class StorageLevel private(
 
   assert(replication < 40, "Replication restricted to be less than 40 for calculating hash codes")
 
+/*
   if (useOffHeap) {
     require(!deserialized, "Off-heap storage level does not support deserialized storage")
   }
+*/
 
   private[spark] def memoryMode: MemoryMode = {
     if (useOffHeap) MemoryMode.OFF_HEAP
@@ -163,6 +165,10 @@ object StorageLevel {
   val MEMORY_AND_DISK_SER_2 = new StorageLevel(true, true, false, false, 2)
   val OFF_HEAP = new StorageLevel(true, true, true, false, 1)
 
+//Lotus: New_Heap with 2 cases
+  val NEW_HEAP_1 = new StorageLevel(false,true,true,true,1)
+  val NEW_HEAP_2 = new StorageLevel(false,true,true,true,1)
+
   /**
    * :: DeveloperApi ::
    * Return the StorageLevel object with the specified name.
@@ -181,6 +187,10 @@ object StorageLevel {
     case "MEMORY_AND_DISK_SER" => MEMORY_AND_DISK_SER
     case "MEMORY_AND_DISK_SER_2" => MEMORY_AND_DISK_SER_2
     case "OFF_HEAP" => OFF_HEAP
+
+    case "NEW_HEAP_1" => NEW_HEAP_1
+    case "NEW_HEAP_2" => NEW_HEAP_2
+
     case _ => throw new IllegalArgumentException(s"Invalid StorageLevel: $s")
   }
 
