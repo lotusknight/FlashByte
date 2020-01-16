@@ -167,7 +167,7 @@ abstract class RDD[T: ClassTag](
     // TODO: Handle changes of StorageLevel
 
     // Lotus: newHeap bypass the judgement
-    if (newLevel != StorageLevel.NEWHEAP_1 || newLevel != StorageLevel.NEWHEAP_2){		
+    if (newLevel != StorageLevel.NEWHEAP_1 || newLevel != StorageLevel.NEWHEAP_2) {
       if (storageLevel != StorageLevel.NONE && newLevel != storageLevel && !allowOverride) {
         throw new UnsupportedOperationException(
           "Cannot change storage level of an RDD after it was already assigned a level")
