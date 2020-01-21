@@ -55,6 +55,14 @@ private case class SerializedMemoryEntry[T](
   def size: Long = buffer.size
 }
 
+// TODO add a new memory entry for native
+private case class NativeMemoryEntry[T](
+    index: Long, // an index get from native method for current block
+    size: Long,
+    classTag: ClassTag[T]) extends MemoryEntry[T] {
+  val memoryMode: MemoryMode = MemoryMode.OFF_HEAP
+}
+
 private[storage] trait BlockEvictionHandler {
   /**
    * Drop a block from memory, possibly putting it on disk if applicable. Called when the memory
@@ -83,6 +91,12 @@ private[spark] class MemoryStore(
     memoryManager: MemoryManager,
     blockEvictionHandler: BlockEvictionHandler)
   extends Logging {
+
+  // TODO add ops in jni
+  @native private def putIntoNative[T: ClassTag](rddArray: T): Long
+  @native private def getFromNative[T: ClassTag](name: Long): T
+  @native private def getSizeNative(name: Long): Long
+  @native private def removeNative(name: Long): Boolean
 
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!

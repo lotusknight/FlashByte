@@ -451,6 +451,7 @@ private[spark] class BlockManager(
         if (level.useMemory && memoryStore.contains(blockId)) {
           val iter: Iterator[Any] = if (level.deserialized) {
             memoryStore.getValues(blockId).get
+        // TODO useOffHeap
           } else {
             serializerManager.dataDeserializeStream(
               blockId, memoryStore.getBytes(blockId).get.toInputStream())(info.classTag)
@@ -521,6 +522,7 @@ private[spark] class BlockManager(
       } else if (level.useMemory && memoryStore.contains(blockId)) {
         // The block was not found on disk, so serialize an in-memory copy:
         serializerManager.dataSerializeWithExplicitClassTag(
+          // TODO get native
           blockId, memoryStore.getValues(blockId).get, info.classTag)
       } else {
         handleLocalReadFailure(blockId)
@@ -802,6 +804,7 @@ private[spark] class BlockManager(
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
         val putSucceeded = if (level.deserialized) {
+          // TODO jni
           val values =
             serializerManager.dataDeserializeStream(blockId, bytes.toInputStream())(classTag)
           memoryStore.putIteratorAsValues(blockId, values, classTag) match {
