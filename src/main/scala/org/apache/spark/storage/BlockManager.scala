@@ -1086,6 +1086,7 @@ private[spark] class BlockManager(
    * @return a copy of the iterator. The original iterator passed this method should no longer
    *         be used after this method returns.
    */
+    // TODO we won't cache in offheap for this situation
   private def maybeCacheDiskValuesInMemory[T](
       blockInfo: BlockInfo,
       blockId: BlockId,

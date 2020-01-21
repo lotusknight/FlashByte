@@ -93,10 +93,10 @@ private[spark] class MemoryStore(
   extends Logging {
 
   // TODO add ops in jni
-  @native private def putIntoNative[T: ClassTag](rddArray: T): Long
-  @native private def getFromNative[T: ClassTag](name: Long): T
+  @native private def putIntoNative[T: ClassTag](rddArray: Array[T]): Long // if failed, return 0
+  @native private def getFromNative[T: ClassTag](name: Long): Array[T]
   @native private def getSizeNative(name: Long): Long
-  @native private def removeNative(name: Long): Boolean
+  @native private def removeNative(name: Long): Unit
 
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!
@@ -190,6 +190,7 @@ private[spark] class MemoryStore(
    *         `close()` on it in order to free the storage memory consumed by the partially-unrolled
    *         block.
    */
+    // TODO add jni
   private[storage] def putIteratorAsValues[T](
       blockId: BlockId,
       values: Iterator[T],
@@ -439,8 +440,15 @@ private[spark] class MemoryStore(
       case DeserializedMemoryEntry(values, _, _) =>
         val x = Some(values)
         x.map(_.iterator)
+      // TODO add jni
+      // do we need to predict if it's off heap,
+      // or we can just use case without predicting in block manager
+      case NativeMemoryEntry(index, _, _) =>
+        val x = Some(getFromNative(index))
+        x.map(_.iterator)
     }
   }
+
 
   def remove(blockId: BlockId): Boolean = memoryManager.synchronized {
     val entry = entries.synchronized {
@@ -449,8 +457,11 @@ private[spark] class MemoryStore(
     if (entry != null) {
       entry match {
         case SerializedMemoryEntry(buffer, _, _) => buffer.dispose()
+        // TODO add jni
+        case NativeMemoryEntry(index, _, _) => removeNative(index)
         case _ =>
       }
+      // TODO release native memory size layout
       memoryManager.releaseStorageMemory(entry.size, entry.memoryMode)
       logDebug(s"Block $blockId of size ${entry.size} dropped " +
         s"from memory (free ${maxMemory - blocksMemoryUsed})")
