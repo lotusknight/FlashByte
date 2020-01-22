@@ -190,7 +190,7 @@ private[spark] class MemoryStore(
    *         `close()` on it in order to free the storage memory consumed by the partially-unrolled
    *         block.
    */
-    // TODO add jni
+
   private[storage] def putIteratorAsValues[T](
       blockId: BlockId,
       values: Iterator[T],
@@ -250,13 +250,24 @@ private[spark] class MemoryStore(
       // We successfully unrolled the entirety of this block
       val arrayValues = vector.toArray
       vector = null
+
+      // TODO add jni
+      ifis native
+      val index = putIntoNative(arrayValues)
+      val entry =
+        new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
+
       val entry =
         new DeserializedMemoryEntry[T](arrayValues, SizeEstimator.estimate(arrayValues), classTag)
+
       val size = entry.size
       def transferUnrollToStorage(amount: Long): Unit = {
         // Synchronize so that transfer is atomic
         memoryManager.synchronized {
           releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, amount)
+// todo
+          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.OFF_HEAP)
+
           val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.ON_HEAP)
           assert(success, "transferring unroll memory to storage memory failed")
         }
@@ -457,11 +468,10 @@ private[spark] class MemoryStore(
     if (entry != null) {
       entry match {
         case SerializedMemoryEntry(buffer, _, _) => buffer.dispose()
-        // TODO add jni
+        // TODO add jni, release native memory size layout
         case NativeMemoryEntry(index, _, _) => removeNative(index)
         case _ =>
       }
-      // TODO release native memory size layout
       memoryManager.releaseStorageMemory(entry.size, entry.memoryMode)
       logDebug(s"Block $blockId of size ${entry.size} dropped " +
         s"from memory (free ${maxMemory - blocksMemoryUsed})")
@@ -499,6 +509,8 @@ private[spark] class MemoryStore(
    * @param memoryMode the type of memory to free (on- or off-heap)
    * @return the amount of memory (in bytes) freed by eviction
    */
+    // TODO jni storage is important to not be evicted
+    //  we can use blockId to get the entry and skip
   private[spark] def evictBlocksToFreeSpace(
       blockId: Option[BlockId],
       space: Long,
@@ -509,7 +521,8 @@ private[spark] class MemoryStore(
       val rddToAdd = blockId.flatMap(getRddId)
       val selectedBlocks = new ArrayBuffer[BlockId]
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
-        entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId))
+        entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId)) &&
+          !(entry.isInstanceOf[NativeMemoryEntry]) // TODO we can avoid processing native storage
       }
       // This is synchronized to ensure that the set of entries is not changed
       // (because of getValue or getBytes) while traversing the iterator, as that
@@ -533,7 +546,7 @@ private[spark] class MemoryStore(
       }
 
       def dropBlock[T](blockId: BlockId, entry: MemoryEntry[T]): Unit = {
-        val data = entry match {
+        val data = entry match { // TODO add a third option
           case DeserializedMemoryEntry(values, _, _) => Left(values)
           case SerializedMemoryEntry(buffer, _, _) => Right(buffer)
         }
