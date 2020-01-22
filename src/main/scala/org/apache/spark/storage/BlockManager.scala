@@ -1250,7 +1250,7 @@ private[spark] class BlockManager(
    */
     // TODO how to add a third except left or right,
     //  as we only cache important data, here
-    //  we won't store that out of memory
+    //  we won't store blocks out of memory
     //  we can use blockId to get the entry and skip
   private[storage] override def dropFromMemory[T: ClassTag](
       blockId: BlockId,
