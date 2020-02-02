@@ -807,13 +807,26 @@ private[spark] class BlockManager(
           // TODO jni
           val values =
             serializerManager.dataDeserializeStream(blockId, bytes.toInputStream())(classTag)
-          memoryStore.putIteratorAsValues(blockId, values, classTag) match {
-            case Right(_) => true
-            case Left(iter) =>
-              // If putting deserialized values in memory failed, we will put the bytes directly to
-              // disk, so we don't need this iterator and can close it to free resources earlier.
-              iter.close()
-              false
+          if (!level.useOffHeap) {
+            memoryStore.putIteratorAsValues(blockId, values, classTag) match {
+              case Right(_) => true
+              case Left(iter) =>
+                // If putting deserialized values in memory failed, we will
+                // put the bytes directly to disk, so we don't need this
+                // iterator and can close it to free resources earlier.
+                iter.close()
+                false
+            }
+          } else {
+            memoryStore.putIteratorAsNative(blockId, values, classTag) match {
+              case Right(_) => true
+              case Left(iter) =>
+                // If putting deserialized values in memory failed, we will
+                // put the bytes directly to disk, so we don't need this
+                // iterator and can close it to free resources earlier.
+                iter.close()
+                false
+            }
           }
         } else {
           memoryStore.putBytes(blockId, size, level.memoryMode, () => bytes)
@@ -957,20 +970,32 @@ private[spark] class BlockManager(
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
         if (level.deserialized) {
-          memoryStore.putIteratorAsValues(blockId, iterator(), classTag) match {
-            case Right(s) =>
-              size = s
-            case Left(iter) =>
-              // Not enough space to unroll this block; drop to disk if applicable
-              if (level.useDisk) {
-                logWarning(s"Persisting block $blockId to disk instead.")
-                diskStore.put(blockId) { fileOutputStream =>
-                  serializerManager.dataSerializeStream(blockId, fileOutputStream, iter)(classTag)
+          if (!level.useOffHeap) {
+            memoryStore.putIteratorAsValues(blockId, iterator(), classTag) match {
+              case Right(s) =>
+                size = s
+              case Left(iter) =>
+                // Not enough space to unroll this block; drop to disk if applicable
+                if (level.useDisk) {
+                  logWarning(s"Persisting block $blockId to disk instead.")
+                  diskStore.put(blockId) { fileOutputStream =>
+                    serializerManager.dataSerializeStream(blockId, fileOutputStream, iter)(classTag)
+                  }
+                  size = diskStore.getSize(blockId)
+                } else {
+                  iteratorFromFailedMemoryStorePut = Some(iter)
                 }
-                size = diskStore.getSize(blockId)
-              } else {
-                iteratorFromFailedMemoryStorePut = Some(iter)
-              }
+            }
+          } else {
+            memoryStore.putIteratorAsNative(blockId, iterator(), classTag) match {
+              case Right(_) => true
+              case Left(iter) =>
+                // If putting deserialized values in memory failed, we will
+                // put the bytes directly to disk, so we don't need this
+                // iterator and can close it to free resources earlier.
+                iter.close()
+                false
+            }
           }
         } else { // !level.deserialized
           memoryStore.putIteratorAsBytes(blockId, iterator(), classTag, level.memoryMode) match {
@@ -1047,7 +1072,7 @@ private[spark] class BlockManager(
       level: StorageLevel,
       diskBytes: ChunkedByteBuffer): Option[ChunkedByteBuffer] = {
     require(!level.deserialized)
-    if (level.useMemory) {
+    if (level.useMemory && !level.useOffHeap) {
       // Synchronize on blockInfo to guard against a race condition where two readers both try to
       // put values read from disk into the MemoryStore.
       blockInfo.synchronized {
