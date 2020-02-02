@@ -252,10 +252,10 @@ private[spark] class MemoryStore(
       vector = null
 
       // TODO add jni
-      ifis native
-      val index = putIntoNative(arrayValues)
-      val entry =
-        new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
+//      ifis native
+//      val index = putIntoNative(arrayValues)
+//      val entry =
+//        new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
 
       val entry =
         new DeserializedMemoryEntry[T](arrayValues, SizeEstimator.estimate(arrayValues), classTag)
@@ -266,7 +266,7 @@ private[spark] class MemoryStore(
         memoryManager.synchronized {
           releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, amount)
 // todo
-          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.OFF_HEAP)
+//          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.OFF_HEAP)
 
           val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.ON_HEAP)
           assert(success, "transferring unroll memory to storage memory failed")
@@ -319,6 +319,156 @@ private[spark] class MemoryStore(
         rest = values))
     }
   }
+
+// TODO add new native
+  private[storage] def putIteratorAsNative[T](
+      blockId: BlockId,
+      values: Iterator[T],
+      classTag: ClassTag[T]): Either[PartiallyUnrolledIterator[T], Long] = {
+
+    // rl Do we need this condition?
+    require(!contains(blockId), s"Block $blockId is already present in the MemoryStore")
+
+    // Number of elements unrolled so far
+    var elementsUnrolled = 0
+    // Whether there is still enough memory for us to continue unrolling this block
+    var keepUnrolling = true
+    // Initial per-task memory to request for unrolling blocks (bytes).
+    val initialMemoryThreshold = unrollMemoryThreshold
+    // How often to check whether we need to request more memory
+    val memoryCheckPeriod = 16
+    // Memory currently reserved by this task for this particular unrolling operation
+    var memoryThreshold = initialMemoryThreshold
+    // Memory to request as a multiple of current vector size
+    val memoryGrowthFactor = 1.5
+    // Keep track of unroll memory used by this particular block / putIterator() operation
+    var unrollMemoryUsedByThisBlock = 0L
+    // Underlying vector for unrolling the block
+    var vector = new SizeTrackingVector[T]()(classTag)
+
+    // Request enough memory to begin unrolling
+    keepUnrolling =
+      reserveUnrollMemoryForThisTask(blockId, initialMemoryThreshold, MemoryMode.ON_HEAP)
+
+    if (!keepUnrolling) {
+      logWarning(s"Failed to reserve initial memory threshold of " +
+        s"${Utils.bytesToString(initialMemoryThreshold)} for computing block $blockId in memory.")
+    } else {
+      unrollMemoryUsedByThisBlock += initialMemoryThreshold
+    }
+
+    // Unroll this block safely, checking whether we have exceeded our threshold periodically
+    while (values.hasNext && keepUnrolling) {
+      vector += values.next()
+      if (elementsUnrolled % memoryCheckPeriod == 0) {
+        // If our vector's size has exceeded the threshold, request more memory
+        val currentSize = vector.estimateSize()
+        if (currentSize >= memoryThreshold) {
+          val amountToRequest = (currentSize * memoryGrowthFactor - memoryThreshold).toLong
+          keepUnrolling =
+            reserveUnrollMemoryForThisTask(blockId, amountToRequest, MemoryMode.ON_HEAP)
+          if (keepUnrolling) {
+            unrollMemoryUsedByThisBlock += amountToRequest // we need to release this unroll mem
+          }
+          // New threshold is currentSize * memoryGrowthFactor
+          memoryThreshold += amountToRequest
+        }
+      }
+      elementsUnrolled += 1
+    }
+
+    if (keepUnrolling) {
+      // We successfully unrolled the entirety of this block
+      // TODO add jni
+//      val tempSize = SizeEstimator.estimate(vector.toArray) // array, as we never ask mem from
+                                                            // spark for this,
+                                                            // we don't need to release this mem
+      val index = putIntoNative(vector.toArray)
+      val entry =
+        new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
+      vector = null
+//      val entry =
+//        new DeserializedMemoryEntry[T](arrayValues, SizeEstimator.estimate(arrayValues), classTag)
+      val size = entry.size
+
+
+      // As 2 are not the same, we need two parameters to save size value
+
+/*      def transferUnrollToStorage(onHeapAmount: Long, offHeapAmount: Long): Unit = {
+        // Synchronize so that transfer is atomic
+        memoryManager.synchronized {
+          releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, onHeapAmount)
+          // todo
+          val success = memoryManager.acquireStorageMemory(blockId, offHeapAmount, MemoryMode.OFF_HEAP)
+//          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.ON_HEAP)
+          assert(success, "transferring unroll memory to storage memory failed")
+        }
+      }
+*/
+      // release onHeapAmount, unroll allocated part, this is used for unroll,
+      // acquire for offheap used for native, so do we need to know the size of the
+      // array, as we never allocate mem for array I guess we don't need to know that
+      var success = false
+      memoryManager.synchronized {
+        releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, unrollMemoryUsedByThisBlock)
+        success = memoryManager.acquireStorageMemory(blockId,
+          getSizeNative(index), MemoryMode.OFF_HEAP)
+        assert(success, "transferring unroll memory to storage memory failed")
+      }
+
+/*      // Acquire storage memory if necessary to store this block in memory.
+      val enoughStorageMemory = {
+        if (unrollMemoryUsedByThisBlock <= size) {
+          val acquiredExtra =
+            memoryManager.acquireStorageMemory(
+              blockId, size - unrollMemoryUsedByThisBlock, MemoryMode.ON_HEAP)
+          if (acquiredExtra) {
+            transferUnrollToStorage(unrollMemoryUsedByThisBlock)
+          }
+          acquiredExtra
+        } else { // unrollMemoryUsedByThisBlock > size
+          // If this task attempt already owns more unroll memory than is necessary to store the
+          // block, then release the extra memory that will not be used.
+          val excessUnrollMemory = unrollMemoryUsedByThisBlock - size
+          releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, excessUnrollMemory)
+          transferUnrollToStorage(size)
+          true
+        }
+      }
+
+ */
+      if (success) {
+        entries.synchronized {
+          entries.put(blockId, entry)
+        }
+        logInfo("Block %s stored as values in memory (estimated size %s, free %s)".format(
+          blockId, Utils.bytesToString(size), Utils.bytesToString(maxMemory - blocksMemoryUsed)))
+        Right(size)
+      }
+      else {
+        assert(currentUnrollMemoryForThisTask >= unrollMemoryUsedByThisBlock,
+          "released too much unroll memory") // rl what does this mean?
+        // todo :left part will be solved lately
+        Left(new PartiallyUnrolledIterator(
+          this,
+          MemoryMode.OFF_HEAP,
+          entry.size,
+          unrolled = getFromNative(index).toIterator,
+          rest = Iterator.empty))
+      }
+    } else {
+      // We ran out of space while unrolling the values for this block
+      logUnrollFailureMessage(blockId, vector.estimateSize())
+      Left(new PartiallyUnrolledIterator(
+        this,
+        MemoryMode.OFF_HEAP,
+        unrollMemoryUsedByThisBlock,
+        unrolled = vector.iterator,
+        rest = values))
+    }
+  }
+
+
 
   /**
    * Attempt to put the given block in memory store as bytes.
@@ -498,7 +648,7 @@ private[spark] class MemoryStore(
     blockId.asRDDId.map(_.rddId)
   }
 
-  /**
+  /** TODO question: do we need to do this if we finish the Job and no block is need any more?
    * Try to evict blocks to free up a given amount of space to store a particular block.
    * Can fail if either the block is bigger than our memory or it would require replacing
    * another block from the same RDD (which leads to a wasteful cyclic replacement pattern for
