@@ -55,11 +55,14 @@ private case class SerializedMemoryEntry[T](
   def size: Long = buffer.size
 }
 
-// TODO add a new memory entry for native
+// add a new memory entry for native
 private case class NativeMemoryEntry[T](
     index: Long, // an index get from native method for current block
     size: Long,
     classTag: ClassTag[T]) extends MemoryEntry[T] {
+//  def getValues(index): Array[T] = {
+//    MemoryStore.getFromNative(index)
+//  }
   val memoryMode: MemoryMode = MemoryMode.OFF_HEAP
 }
 
@@ -92,11 +95,16 @@ private[spark] class MemoryStore(
     blockEvictionHandler: BlockEvictionHandler)
   extends Logging {
 
-  // TODO add ops in jni
-  @native private def putIntoNative[T: ClassTag](rddArray: Array[T]): Long // if failed, return 0
-  @native private def getFromNative[T: ClassTag](name: Long): Array[T]
-  @native private def getSizeNative(name: Long): Long
-  @native private def removeNative(name: Long): Unit
+  // add ops in jni
+  // @native private def putIntoNative[T: ClassTag](rddArray: Array[T]): Long
+  // @native private def getFromNative[T: ClassTag](name: Long): Array[T]
+  // @native private def getSizeNative(name: Long): Long
+  // @native private def removeNative(name: Long): Unit
+  @native def putIntoNative[T: ClassTag](rddArray: Array[T]): Long // if failed, return 0
+//  @native def getFromNative[T: ClassTag](name: Long): Array[T]
+  @native def getFromNative[T: ClassTag](name: Long): Array[T]
+  @native def getSizeNative(name: Long): Long
+  @native def removeNative(name: Long): Unit
 
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!
@@ -251,7 +259,6 @@ private[spark] class MemoryStore(
       val arrayValues = vector.toArray
       vector = null
 
-      // TODO add jni
 //      ifis native
 //      val index = putIntoNative(arrayValues)
 //      val entry =
@@ -265,8 +272,6 @@ private[spark] class MemoryStore(
         // Synchronize so that transfer is atomic
         memoryManager.synchronized {
           releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, amount)
-// todo
-//          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.OFF_HEAP)
 
           val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.ON_HEAP)
           assert(success, "transferring unroll memory to storage memory failed")
@@ -320,7 +325,7 @@ private[spark] class MemoryStore(
     }
   }
 
-// TODO add new native
+// add new native
   private[storage] def putIteratorAsNative[T](
       blockId: BlockId,
       values: Iterator[T],
@@ -379,11 +384,14 @@ private[spark] class MemoryStore(
 
     if (keepUnrolling) {
       // We successfully unrolled the entirety of this block
-      // TODO add jni
+
 //      val tempSize = SizeEstimator.estimate(vector.toArray) // array, as we never ask mem from
                                                             // spark for this,
                                                             // we don't need to release this mem
-      val index = putIntoNative(vector.toArray)
+      var arrayValues = vector.toArray
+      val index = putIntoNative[T](arrayValues)
+      arrayValues = null
+      // TODO
       val entry =
         new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
       vector = null
@@ -398,7 +406,7 @@ private[spark] class MemoryStore(
         // Synchronize so that transfer is atomic
         memoryManager.synchronized {
           releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, onHeapAmount)
-          // todo
+
           val success = memoryManager.acquireStorageMemory(blockId, offHeapAmount, MemoryMode.OFF_HEAP)
 //          val success = memoryManager.acquireStorageMemory(blockId, amount, MemoryMode.ON_HEAP)
           assert(success, "transferring unroll memory to storage memory failed")
@@ -607,6 +615,9 @@ private[spark] class MemoryStore(
       case NativeMemoryEntry(index, _, _) =>
         val x = Some(getFromNative(index))
         x.map(_.iterator)
+        // val x = getFromNative(index)
+        // Some(x.iterator)
+
     }
   }
 
@@ -618,7 +629,7 @@ private[spark] class MemoryStore(
     if (entry != null) {
       entry match {
         case SerializedMemoryEntry(buffer, _, _) => buffer.dispose()
-        // TODO add jni, release native memory size layout
+        // add jni, release native memory size layout
         case NativeMemoryEntry(index, _, _) => removeNative(index)
         case _ =>
       }
@@ -659,8 +670,8 @@ private[spark] class MemoryStore(
    * @param memoryMode the type of memory to free (on- or off-heap)
    * @return the amount of memory (in bytes) freed by eviction
    */
-    // TODO jni storage is important to not be evicted
-    //  we can use blockId to get the entry and skip
+    // jni storage is important to not be evicted
+    // we can use blockId to get the entry and skip
   private[spark] def evictBlocksToFreeSpace(
       blockId: Option[BlockId],
       space: Long,
@@ -671,8 +682,13 @@ private[spark] class MemoryStore(
       val rddToAdd = blockId.flatMap(getRddId)
       val selectedBlocks = new ArrayBuffer[BlockId]
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
-        entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId)) &&
-          !(entry.isInstanceOf[NativeMemoryEntry]) // TODO we can avoid processing native storage
+        val offEntry = entry match {
+          case NativeMemoryEntry(_, _, _) => false
+          case _ => true
+        }
+        entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd
+          != getRddId(blockId)) && offEntry
+//          !(entry.isInstanceOf[NativeMemoryEntry]) // TODO we can avoid processing native storage
       }
       // This is synchronized to ensure that the set of entries is not changed
       // (because of getValue or getBytes) while traversing the iterator, as that
