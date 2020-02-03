@@ -100,8 +100,11 @@ private[spark] class MemoryStore(
   // @native private def getFromNative[T: ClassTag](name: Long): Array[T]
   // @native private def getSizeNative(name: Long): Long
   // @native private def removeNative(name: Long): Unit
-  @native def putIntoNative[T: ClassTag](rddArray: Array[T]): Long // if failed, return 0
+//  @native def putIntoNative[T](rddArray: Array[T], classTag: ClassTag[T]): Long
+  @native def putIntoNative[T](rddArray: Array[T])(implicit classTag: ClassTag[T]): Long
+  // if failed, return 0
 //  @native def getFromNative[T: ClassTag](name: Long): Array[T]
+  // todo why getFromNative will get an Array[Nothing]
   @native def getFromNative[T: ClassTag](name: Long): Array[T]
   @native def getSizeNative(name: Long): Long
   @native def removeNative(name: Long): Unit
@@ -388,9 +391,12 @@ private[spark] class MemoryStore(
 //      val tempSize = SizeEstimator.estimate(vector.toArray) // array, as we never ask mem from
                                                             // spark for this,
                                                             // we don't need to release this mem
-      var arrayValues = vector.toArray
-      val index = putIntoNative[T](arrayValues)
-      arrayValues = null
+//      val index = putIntoNative[T](vector.toArray, classTag)
+      val index = putIntoNative[T](vector.toArray)(classTag)
+      // var arrayValues = vector.toArray
+      // val index = putIntoNative(arrayValues)
+      // val index = putIntoNative[T](arrayValues)
+      // arrayValues = null
       // TODO
       val entry =
         new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
@@ -613,8 +619,10 @@ private[spark] class MemoryStore(
       // do we need to predict if it's off heap,
       // or we can just use case without predicting in block manager
       case NativeMemoryEntry(index, _, _) =>
-        val x = Some(getFromNative(index))
-        x.map(_.iterator)
+        val x = Some(getFromNative(index).iterator)
+        x
+      //  val x = Some(getFromNative(index))
+      //  x.map(_.iterator)
         // val x = getFromNative(index)
         // Some(x.iterator)
 
