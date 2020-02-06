@@ -602,6 +602,8 @@ private[spark] class MemoryStore(
       case null => None
       case e: DeserializedMemoryEntry[_] =>
         throw new IllegalArgumentException("should only call getBytes on serialized blocks")
+      case e: NativeMemoryEntry[_] =>
+        throw new IllegalArgumentException("should only call getBytes on serialized blocks")
       case SerializedMemoryEntry(bytes, _, _) => Some(bytes)
     }
   }
