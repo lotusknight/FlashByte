@@ -1,4 +1,4 @@
 # FlashByte
 Hello everyone！
 
-FlashByte, a lightweight native storage that efficiently caches intermediate data.
+FlashByte is a lightweight native storage that efficiently caches intermediate data.
