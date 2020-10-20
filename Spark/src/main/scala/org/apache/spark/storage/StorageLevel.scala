@@ -166,8 +166,8 @@ object StorageLevel {
   val OFF_HEAP = new StorageLevel(true, true, true, false, 1)
 
   // Lotus: New_Heap with 2 cases
-  val NEWHEAP_1 = new StorageLevel(false, true, true, true, 1)
-  val NEWHEAP_2 = new StorageLevel(false, true, true, true, 1)
+  val NEW_HEAP_1 = new StorageLevel(false, true, true, true, 1)
+  val NEW_HEAP_2 = new StorageLevel(false, true, true, true, 1)
 
   /**
    * :: DeveloperApi ::
@@ -187,9 +187,10 @@ object StorageLevel {
     case "MEMORY_AND_DISK_SER" => MEMORY_AND_DISK_SER
     case "MEMORY_AND_DISK_SER_2" => MEMORY_AND_DISK_SER_2
     case "OFF_HEAP" => OFF_HEAP
+//    case "OFF_HEAP" => NEW_HEAP_1
 
-    case "NEW_HEAP_1" => NEWHEAP_1
-    case "NEW_HEAP_2" => NEWHEAP_2
+    case "NEW_HEAP_1" => NEW_HEAP_1
+    case "NEW_HEAP_2" => NEW_HEAP_2
 
     case _ => throw new IllegalArgumentException(s"Invalid StorageLevel: $s")
   }

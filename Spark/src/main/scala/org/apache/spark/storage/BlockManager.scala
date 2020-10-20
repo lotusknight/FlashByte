@@ -807,7 +807,7 @@ private[spark] class BlockManager(
           // TODO jni
           val values =
             serializerManager.dataDeserializeStream(blockId, bytes.toInputStream())(classTag)
-          if (!level.useOffHeap) {
+//          if (!level.useOffHeap) {
             memoryStore.putIteratorAsValues(blockId, values, classTag) match {
               case Right(_) => true
               case Left(iter) =>
@@ -817,7 +817,7 @@ private[spark] class BlockManager(
                 iter.close()
                 false
             }
-          } else {
+/*          } else {
             memoryStore.putIteratorAsNative(blockId, values, classTag) match {
               case Right(_) => true
               case Left(iter) =>
@@ -828,6 +828,7 @@ private[spark] class BlockManager(
                 false
             }
           }
+*/
         } else {
           memoryStore.putBytes(blockId, size, level.memoryMode, () => bytes)
         }
@@ -997,6 +998,7 @@ private[spark] class BlockManager(
                 false
             }
           }
+
         } else { // !level.deserialized
           memoryStore.putIteratorAsBytes(blockId, iterator(), classTag, level.memoryMode) match {
             case Right(s) =>

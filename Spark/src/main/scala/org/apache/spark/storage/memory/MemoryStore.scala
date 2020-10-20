@@ -30,11 +30,12 @@ import com.google.common.io.ByteStreams
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.memory.{MemoryManager, MemoryMode}
+// import org.apache.spark.mllib.linalg.DenseVector
 import org.apache.spark.serializer.{SerializationStream, SerializerManager}
-import org.apache.spark.storage.{BlockId, BlockInfoManager, StorageLevel, StreamBlockId}
+import org.apache.spark.storage.{BlockId, BlockInfoManager, StorageLevel, StreamBlockId, TransForKMeans, TransForPageRank}
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.{SizeEstimator, Utils}
-import org.apache.spark.util.collection.SizeTrackingVector
+import org.apache.spark.util.collection.{NativeBufferVector, SizeTrackingVector}
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 private sealed trait MemoryEntry[T] {
@@ -57,7 +58,7 @@ private case class SerializedMemoryEntry[T](
 
 // add a new memory entry for native
 private case class NativeMemoryEntry[T](
-    index: Long, // an index get from native method for current block
+    index: Integer, // an index get from native method for current block
     size: Long,
     classTag: ClassTag[T]) extends MemoryEntry[T] {
 //  def getValues(index): Array[T] = {
@@ -95,6 +96,8 @@ private[spark] class MemoryStore(
     blockEvictionHandler: BlockEvictionHandler)
   extends Logging {
 
+/*
+  System.loadLibrary("native")
   // add ops in jni
   // @native private def putIntoNative[T: ClassTag](rddArray: Array[T]): Long
   // @native private def getFromNative[T: ClassTag](name: Long): Array[T]
@@ -102,12 +105,21 @@ private[spark] class MemoryStore(
   // @native private def removeNative(name: Long): Unit
 //  @native def putIntoNative[T](rddArray: Array[T], classTag: ClassTag[T]): Long
   @native def putIntoNative[T](rddArray: Array[T])(implicit classTag: ClassTag[T]): Long
-  // if failed, return 0
+// if failed, return 0
 //  @native def getFromNative[T: ClassTag](name: Long): Array[T]
   // todo why getFromNative will get an Array[Nothing]
   @native def getFromNative[T: ClassTag](name: Long): Array[T]
   @native def getSizeNative(name: Long): Long
   @native def removeNative(name: Long): Unit
+*/
+
+  // For PageRank
+  // todo:
+  val trans = new TransForPageRank
+//  val trans = new TransForKMeans
+
+
+
 
   // Note: all changes to memory allocations, notably putting blocks, evicting blocks, and
   // acquiring or releasing unroll memory, must be synchronized on `memoryManager`!
@@ -328,6 +340,7 @@ private[spark] class MemoryStore(
     }
   }
 
+/*
 // add new native
   private[storage] def putIteratorAsNative[T](
       blockId: BlockId,
@@ -365,6 +378,9 @@ private[spark] class MemoryStore(
       unrollMemoryUsedByThisBlock += initialMemoryThreshold
     }
 
+//    val valueTrans = values.asInstanceOf[Iterator[Tuple2[String, Array[String]]]]
+
+
     // Unroll this block safely, checking whether we have exceeded our threshold periodically
     while (values.hasNext && keepUnrolling) {
       vector += values.next()
@@ -392,12 +408,57 @@ private[spark] class MemoryStore(
                                                             // spark for this,
                                                             // we don't need to release this mem
 //      val index = putIntoNative[T](vector.toArray, classTag)
+      val arr_PageRank = vector.toArray.asInstanceOf[Array[Tuple2[String, Array[String]]]]
+
+//   def transfer(array: Array[Tuple2[String, Array[String]]]): StockData(Array[Byte],
+//   Array[Byte]) {
+      def transfer(array: Array[Tuple2[String, Array[String]]]): Unit = {
+        var arr_index = 0
+        val InitialSize = 64
+        var stock_index = new Array[Byte](InitialSize)
+        var stock_values = new Array[Byte](InitialSize)
+        here I need to adjust the size of array, override the operator += ?
+//        var stock_index = new SizeTrackingVector[Byte]
+//        var stock_values = new SizeTrackingVector[Byte]
+        while( elementsUnrolled != 0 ) {
+          stock_index += array(arr_index)._1;
+          var sub_index = 0
+          while(sub_index != array(arr_index)._2(sub_index).length) {
+            stock_values += array(arr_index)._2(sub_index)
+            stock_values += ","
+            sub_index += 1
+          }
+          stock_values += "."
+          elementsUnrolled -= 1
+        }
+//        new StockData(stock_index, stock_values)
+      }
+
+//      def transStringToByte(array: Array[Byte], string: String) : Array[Byte] = {
+//
+//        array += string
+//      }
+
+
+      /* class StockData(stock_index: Array[Byte], stock_values: Array[Byte]) {
+        val stock_index = Array[Byte]
+        val stock_values = Array[Byte]
+        public stockData(byte[] stock_index, byte[] stock_values){
+          this.stock_index = stock_index
+          this.stock_values = stock_values
+        }
+        public transferToBytebuffer(): Unit {
+        }
+      } */
+    // elementsUnrolled number of
+
+
       val index = putIntoNative[T](vector.toArray)(classTag)
       // var arrayValues = vector.toArray
       // val index = putIntoNative(arrayValues)
       // val index = putIntoNative[T](arrayValues)
       // arrayValues = null
-      // TODO
+      //
       val entry =
         new NativeMemoryEntry[T](index, getSizeNative(index), classTag)
       vector = null
@@ -481,8 +542,137 @@ private[spark] class MemoryStore(
         rest = values))
     }
   }
+*/
 
+  private[storage] def putIteratorAsNative[T](
+      blockId: BlockId,
+      values: Iterator[T],
+      classTag: ClassTag[T]): Either[PartiallyUnrolledIterator[T], Long] = {
 
+    // rl Do we need this condition?
+    require(!contains(blockId), s"Block $blockId is already present in the MemoryStore")
+
+    // Number of elements unrolled so far
+    var elementsUnrolled = 0
+    // Whether there is still enough memory for us to continue unrolling this block
+    var keepUnrolling = true
+    // Initial per-task memory to request for unrolling blocks (bytes).
+    val initialMemoryThreshold = unrollMemoryThreshold
+    // How often to check whether we need to request more memory
+    val memoryCheckPeriod = 16
+    // Memory currently reserved by this task for this particular unrolling operation
+    var memoryThreshold = initialMemoryThreshold
+    // Memory to request as a multiple of current vector size
+    val memoryGrowthFactor = 1.5
+    // Keep track of unroll memory used by this particular block / putIterator() operation
+    var unrollMemoryUsedByThisBlock = 0L
+    // Underlying vector for unrolling the block
+    var vector = new SizeTrackingVector[T]()(classTag)
+
+    // Request enough memory to begin unrolling
+    keepUnrolling =
+      reserveUnrollMemoryForThisTask(blockId, initialMemoryThreshold, MemoryMode.ON_HEAP)
+
+    if (!keepUnrolling) {
+      logWarning(s"Failed to reserve initial memory threshold of " +
+        s"${Utils.bytesToString(initialMemoryThreshold)} for computing block $blockId in memory.")
+    } else {
+      unrollMemoryUsedByThisBlock += initialMemoryThreshold
+    }
+
+    //    val valueTrans = values.asInstanceOf[Iterator[Tuple2[String, Array[String]]]]
+
+    // Unroll this block safely, checking whether we have exceeded our threshold periodically
+    while (values.hasNext && keepUnrolling) {
+      vector += values.next()
+      if (elementsUnrolled % memoryCheckPeriod == 0) {
+        // If our vector's size has exceeded the threshold, request more memory
+        val currentSize = vector.estimateSize()
+        if (currentSize >= memoryThreshold) {
+          val amountToRequest = (currentSize * memoryGrowthFactor - memoryThreshold).toLong
+          keepUnrolling =
+            reserveUnrollMemoryForThisTask(blockId, amountToRequest, MemoryMode.ON_HEAP)
+          if (keepUnrolling) {
+            unrollMemoryUsedByThisBlock += amountToRequest // we need to release this unroll mem
+          }
+          // New threshold is currentSize * memoryGrowthFactor
+          memoryThreshold += amountToRequest
+        }
+      }
+      elementsUnrolled += 1
+    }
+
+    if (keepUnrolling) {
+
+      val arr_PageRank = vector.toArray.asInstanceOf[Array[Tuple2[String, Array[String]]]]
+      trans.transfer(arr_PageRank)
+//      val arr_KMeans = vector.toArray.asInstanceOf[Array[Array[Double]]]
+//      trans.transfer(arr_KMeans)
+      val (index, size) = trans.allocateNative
+//      val index = putIntoNative[T](vector.toArray)(classTag)
+
+      val entry = new NativeMemoryEntry[T](index, size, classTag)
+      vector = null
+
+      var success = false
+      memoryManager.synchronized {
+        releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, unrollMemoryUsedByThisBlock)
+        success = memoryManager.acquireStorageMemory(blockId, size, MemoryMode.OFF_HEAP)
+        assert(success, "transferring unroll memory to storage memory failed")
+      }
+
+/*
+            // Acquire storage memory if necessary to store this block in memory.
+            val enoughStorageMemory = {
+              if (unrollMemoryUsedByThisBlock <= size) {
+                val acquiredExtra =
+                  memoryManager.acquireStorageMemory(
+                    blockId, size - unrollMemoryUsedByThisBlock, MemoryMode.ON_HEAP)
+                if (acquiredExtra) {
+                  transferUnrollToStorage(unrollMemoryUsedByThisBlock)
+                }
+                acquiredExtra
+              } else { // unrollMemoryUsedByThisBlock > size
+                // If this task attempt already owns more unroll memory than is necessary to store the
+                // block, then release the extra memory that will not be used.
+                val excessUnrollMemory = unrollMemoryUsedByThisBlock - size
+                releaseUnrollMemoryForThisTask(MemoryMode.ON_HEAP, excessUnrollMemory)
+                transferUnrollToStorage(size)
+                true
+              }
+            }
+*/
+
+      if (success) {
+        entries.synchronized {
+          entries.put(blockId, entry)
+        }
+        logInfo("Block %s stored as values in memory (estimated size %s, free %s)".format(
+          blockId, Utils.bytesToString(size), Utils.bytesToString(maxMemory - blocksMemoryUsed)))
+        Right(size)
+      }
+      else {
+        assert(currentUnrollMemoryForThisTask >= unrollMemoryUsedByThisBlock,
+          "released too much unroll memory") // rl what does this mean?
+        // todo :left part will be solved lately
+        Left(new PartiallyUnrolledIterator(
+          this,
+          MemoryMode.OFF_HEAP,
+          entry.size,
+          unrolled = trans.transback(index).toIterator.asInstanceOf[Iterator[T]],
+          rest = Iterator.empty))
+      }
+    } else {
+      // We ran out of space while unrolling the values for this block
+      logUnrollFailureMessage(blockId, vector.estimateSize())
+      Left(new PartiallyUnrolledIterator(
+        this,
+        MemoryMode.OFF_HEAP,
+        unrollMemoryUsedByThisBlock,
+        unrolled = vector.iterator,
+        rest = values))
+    }
+  }
 
   /**
    * Attempt to put the given block in memory store as bytes.
@@ -621,7 +811,7 @@ private[spark] class MemoryStore(
       // do we need to predict if it's off heap,
       // or we can just use case without predicting in block manager
       case NativeMemoryEntry(index, _, _) =>
-        val x = Some(getFromNative(index).iterator)
+        val x = Some(trans.transback(index).toIterator)
         x
       //  val x = Some(getFromNative(index))
       //  x.map(_.iterator)
@@ -640,7 +830,7 @@ private[spark] class MemoryStore(
       entry match {
         case SerializedMemoryEntry(buffer, _, _) => buffer.dispose()
         // add jni, release native memory size layout
-        case NativeMemoryEntry(index, _, _) => removeNative(index)
+        case NativeMemoryEntry(index, _, _) => trans.remove(index)
         case _ =>
       }
       memoryManager.releaseStorageMemory(entry.size, entry.memoryMode)
