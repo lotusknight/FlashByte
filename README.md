@@ -1,5 +1,5 @@
 # FlashByte: Improving Memory Efficiency with Lightweight Native Storage
-*Author*: Junxian Zhao, Shaoqi Wang, Aidi Pi, Xiaobo Zhou
+**Author**: Junxian Zhao, Shaoqi Wang, Aidi Pi, Xiaobo Zhou
 
 This repository contains the patchs proposed in the paper.
 
