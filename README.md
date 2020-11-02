@@ -3,7 +3,7 @@
 
 This repository contains the patchs proposed in the paper.
 
-**versions**:
+**versions**:  
 Ubuntu: 16.04.6  
 Java: jdk-8u231  
 Scala: 2.11.8  
